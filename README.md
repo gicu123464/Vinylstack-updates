@@ -1,5 +1,5 @@
 # Vinylstack Updates
 
-This public repository hosts versioned Windows installer releases and update metadata for the Vinylstack desktop app. The application source remains in the private [Vinylstack source repository](https://github.com/gicu123464/Vinylstack).
+This public repository is reserved for Vinylstack’s in-app updater. It hosts update metadata and installer packages consumed by **Settings → Updates**.
 
-Download the latest installer from [Releases](https://github.com/gicu123464/Vinylstack-updates/releases/latest).
+For a normal app download, use the [private Vinylstack repository](https://github.com/gicu123464/Vinylstack/releases/latest). The app source remains private.
