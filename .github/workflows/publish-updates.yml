@@ -55,7 +55,7 @@ jobs:
           fi
           mkdir -p public-assets
           cp "$installer" "$manifest" public-assets/
-          find release-assets -type f -name '*.blockmap' -exec cp {} public-assets/ +
+          find release-assets -type f -name '*.blockmap' -exec cp -t public-assets/ {} +
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
       - name: Publish release to the public updates repository
