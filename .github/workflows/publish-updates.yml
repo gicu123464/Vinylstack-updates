@@ -28,8 +28,15 @@ jobs:
           $package = Get-Content app/Vinylstack/package.json -Raw | ConvertFrom-Json
           if (-not $package.version) { throw 'Could not read the app version.' }
           $tag = "v$($package.version)"
-          gh release view $tag --repo gicu123464/Vinylstack-updates 2>$null
-          if ($LASTEXITCODE -eq 0) {
+          $releaseUrl = "https://api.github.com/repos/gicu123464/Vinylstack-updates/releases/tags/$tag"
+          $releaseExists = $false
+          try {
+            Invoke-RestMethod -Uri $releaseUrl -Headers @{ Accept = 'application/vnd.github+json' } | Out-Null
+            $releaseExists = $true
+          } catch {
+            if ($_.Exception.Response.StatusCode.value__ -ne 404) { throw }
+          }
+          if ($releaseExists) {
             "skip=true" >> $env:GITHUB_OUTPUT
             Write-Host "Release $tag already exists; bump the app version in VinilStack.zip."
           } else {
