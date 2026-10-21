@@ -25,7 +25,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $package = Get-Content app/Vinylstack/package.json -Raw | ConvertFrom-Json
+          $package = Get-Content app/package.json -Raw | ConvertFrom-Json
           if (-not $package.version) { throw 'Could not read the app version.' }
           $tag = "v$($package.version)"
           $releaseUrl = "https://api.github.com/repos/gicu123464/Vinylstack-updates/releases/tags/$tag"
@@ -52,7 +52,7 @@ jobs:
         if: steps.release.outputs.skip != 'true'
         shell: pwsh
         run: |
-          $app = Join-Path $PWD 'app/Vinylstack'
+          $app = Join-Path $PWD 'app'
           New-Item -ItemType Directory -Force -Path $app/vendor | Out-Null
           Invoke-WebRequest -Uri https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe -OutFile $app/vendor/yt-dlp.exe
           $ffmpegZip = Join-Path $env:RUNNER_TEMP 'ffmpeg-gpl.zip'
@@ -70,11 +70,11 @@ jobs:
           '@ | Set-Content -LiteralPath $app/vendor/FFmpeg-BUILD.txt -Encoding utf8
       - name: Install app dependencies
         if: steps.release.outputs.skip != 'true'
-        working-directory: app/Vinylstack
+        working-directory: app
         run: npm ci --no-audit --no-fund
       - name: Build and publish the Windows installer and update feed
         if: steps.release.outputs.skip != 'true'
-        working-directory: app/Vinylstack
+        working-directory: app
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
