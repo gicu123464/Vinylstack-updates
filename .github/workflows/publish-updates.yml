@@ -1,0 +1,73 @@
+name: Publish in-app update from private Vinylstack build
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find the latest source build
+        id: source
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Add SOURCE_REPO_TOKEN in this repository's Actions secrets."
+            exit 1
+          fi
+          runs=$(gh api "repos/gicu123464/Vinylstack/actions/workflows/windows-installer.yml/runs?branch=main&per_page=1")
+          run_id=$(printf '%s' "$runs" | jq -r '.workflow_runs[0].id // empty')
+          conclusion=$(printf '%s' "$runs" | jq -r '.workflow_runs[0].conclusion // empty')
+          if [ -z "$run_id" ] || [ "$conclusion" != "success" ]; then
+            echo "::error::The latest Vinylstack build has not completed successfully; no update was published."
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download installer and updater metadata
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+        run: gh run download "${{ steps.source.outputs.run_id }}" --repo gicu123464/Vinylstack --name Vinylstack-Windows-Installer --dir release-assets
+
+      - name: Validate update files
+        id: release
+        shell: bash
+        run: |
+          installer=$(find release-assets -type f -name 'Vinylstack-Setup.exe' -print -quit)
+          manifest=$(find release-assets -type f -name 'latest.yml' -print -quit)
+          if [ -z "$installer" ] || [ -z "$manifest" ]; then
+            echo "::error::The private build artifact must contain Vinylstack-Setup.exe and latest.yml."
+            exit 1
+          fi
+          version=$(awk -F': *' '/^version:/ { gsub(/"/, "", $2); print $2; exit }' "$manifest")
+          if [ -z "$version" ]; then
+            echo "::error::Could not read the version from latest.yml."
+            exit 1
+          fi
+          mkdir -p public-assets
+          cp "$installer" "$manifest" public-assets/
+          find release-assets -type f -name '*.blockmap' -exec cp {} public-assets/ +
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release to the public updates repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="${{ steps.release.outputs.tag }}"
+          version="${{ steps.release.outputs.version }}"
+          repo=gicu123464/Vinylstack-updates
+          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            gh release upload "$tag" public-assets/* --repo "$repo" --clobber
+            gh release edit "$tag" --repo "$repo" --title "Vinylstack $version" --notes "In-app update for Vinylstack $version." --latest
+          else
+            gh release create "$tag" public-assets/* --repo "$repo" --title "Vinylstack $version" --notes "In-app update for Vinylstack $version." --latest
+          fi
