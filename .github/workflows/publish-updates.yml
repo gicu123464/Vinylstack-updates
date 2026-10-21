@@ -1,75 +1,81 @@
-name: Publish in-app update from private Vinylstack build
+name: Build and publish Vinylstack update
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "15 4 * * *"
 
 permissions:
   contents: write
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
-      - name: Find the latest source build
-        id: source
-        env:
-          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
-        shell: bash
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::notice::Add SOURCE_REPO_TOKEN in this repository's Actions secrets; skipping until it is configured."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          runs=$(gh api "repos/gicu123464/Vinylstack/actions/workflows/windows-installer.yml/runs?branch=main&per_page=1")
-          run_id=$(printf '%s' "$runs" | jq -r '.workflow_runs[0].id // empty')
-          conclusion=$(printf '%s' "$runs" | jq -r '.workflow_runs[0].conclusion // empty')
-          if [ -z "$run_id" ] || [ "$conclusion" != "success" ]; then
-            echo "::notice::No successful latest source build is ready yet; skipping this check."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-      - name: Download installer and updater metadata
-        if: steps.source.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
-        run: gh run download "${{ steps.source.outputs.run_id }}" --repo gicu123464/Vinylstack --name Vinylstack-Windows-Installer --dir release-assets
-      - name: Validate update files
-        if: steps.source.outputs.skip != 'true'
-        id: release
-        shell: bash
-        run: |
-          installer=$(find release-assets -type f -name 'Vinylstack-Setup.exe' -print -quit)
-          manifest=$(find release-assets -type f -name 'latest.yml' -print -quit)
-          if [ -z "$installer" ] || [ -z "$manifest" ]; then
-            echo "::error::The private build artifact must contain Vinylstack-Setup.exe and latest.yml."
-            exit 1
-          fi
-          version=$(awk -F': *' '/^version:/ { gsub(/"/, "", $2); print $2; exit }' "$manifest")
-          if [ -z "$version" ]; then
-            echo "::error::Could not read the version from latest.yml."
-            exit 1
-          fi
-          mkdir -p public-assets
-          cp "$installer" "$manifest" public-assets/
-          find release-assets -type f -name '*.blockmap' -exec cp -t public-assets/ {} +
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-      - name: Publish release to the public updates repository
-        if: steps.source.outputs.skip != 'true'
+      - name: Check out public updates repository
+        uses: actions/checkout@v4
+      - name: Check out private app source (read-only)
+        uses: actions/checkout@v4
+        with:
+          repository: gicu123464/Vinylstack
+          ref: main
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          path: private-source
+          persist-credentials: false
+      - name: Read version and skip existing releases
+        id: version
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
-          tag="${{ steps.release.outputs.tag }}"
-          version="${{ steps.release.outputs.version }}"
-          repo=gicu123464/Vinylstack-updates
-          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-            gh release upload "$tag" public-assets/* --repo "$repo" --clobber
-            gh release edit "$tag" --repo "$repo" --title "Vinylstack $version" --notes "In-app update for Vinylstack $version." --latest
-          else
-            gh release create "$tag" public-assets/* --repo "$repo" --title "Vinylstack $version" --notes "In-app update for Vinylstack $version." --latest
-          fi
+          $package = Get-Content private-source/package.json -Raw | ConvertFrom-Json
+          $version = $package.version
+          if (-not $version) { throw 'Could not read the app version.' }
+          $tag = "v$version"
+          gh release view $tag --repo gicu123464/Vinylstack-updates 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            "skip=true" >> $env:GITHUB_OUTPUT
+            Write-Host "Release $tag already exists; nothing to publish."
+          } else {
+            "skip=false" >> $env:GITHUB_OUTPUT
+            "version=$version" >> $env:GITHUB_OUTPUT
+            "tag=$tag" >> $env:GITHUB_OUTPUT
+          }
+      - name: Prepare app and bundled media tools
+        if: steps.version.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          Expand-Archive -LiteralPath private-source/VinilStack.zip -DestinationPath app
+          $app = Join-Path $PWD 'app/Vinylstack'
+          New-Item -ItemType Directory -Force -Path $app/vendor | Out-Null
+          Invoke-WebRequest -Uri https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe -OutFile $app/vendor/yt-dlp.exe
+          $ffmpegZip = Join-Path $env:RUNNER_TEMP 'ffmpeg-gpl.zip'
+          $ffmpegDir = Join-Path $env:RUNNER_TEMP 'ffmpeg-gpl'
+          Invoke-WebRequest -Uri https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip -OutFile $ffmpegZip
+          Expand-Archive -LiteralPath $ffmpegZip -DestinationPath $ffmpegDir
+          $ffmpeg = Get-ChildItem -LiteralPath $ffmpegDir -Filter ffmpeg.exe -Recurse | Select-Object -First 1
+          if (-not $ffmpeg) { throw 'FFmpeg executable was not found in the downloaded GPL build.' }
+          Copy-Item -LiteralPath $ffmpeg.FullName -Destination $app/vendor/ffmpeg.exe
+          @'
+          Vinylstack bundles FFmpeg for Windows audio conversion.
+
+          Build project: https://github.com/BtbN/FFmpeg-Builds
+          Source code and licensing information: https://ffmpeg.org/legal.html
+          FFmpeg source: https://github.com/FFmpeg/FFmpeg
+          This bundle uses the GPL build. FFmpeg remains a separate executable and is not part of Vinylstack source code.
+          '@ | Set-Content -LiteralPath $app/vendor/FFmpeg-BUILD.txt -Encoding utf8
+      - uses: actions/setup-node@v4
+        if: steps.version.outputs.skip != 'true'
+        with:
+          node-version: 22
+      - name: Install dependencies
+        if: steps.version.outputs.skip != 'true'
+        working-directory: app/Vinylstack
+        run: npm install --no-audit --no-fund
+      - name: Build and publish update to this public repository
+        if: steps.version.outputs.skip != 'true'
+        working-directory: app/Vinylstack
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: npx electron-builder --win nsis --publish always
